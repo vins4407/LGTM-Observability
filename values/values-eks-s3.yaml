@@ -1,0 +1,74 @@
+# values-eks-s3.yaml
+# EKS deployment with AWS S3 storage and IAM Roles (IRSA)
+#
+# Usage:
+#   helm upgrade --install lgtm-stack . -n observability --create-namespace -f values/values-eks-s3.yaml
+#
+# Prerequisites:
+#   1. Create S3 buckets (see README)
+#   2. Create IAM role with S3 access and IRSA trust policy (see README)
+#
+# What to change:
+#   - global.clusterName    → your EKS cluster name
+#   - global.storage.s3.*   → your AWS region
+#   - All "CHANGE THIS"     → your bucket names and IAM role ARN
+
+global:
+  clusterName: "your-eks-cluster"           # CHANGE THIS
+  tenantId: "tenant1"
+  retention:
+    logs: "168h"
+    metrics: "168h"
+    traces: "168h"
+  storage:
+    type: "s3"
+    s3:
+      region: "us-east-1"                   # CHANGE THIS
+      endpoint: ""
+
+minio:
+  enabled: false
+
+# --- Loki (Logs) ---
+loki:
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/YOUR_ROLE_NAME"  # CHANGE THIS
+  loki:
+    storage_config:
+      aws:
+        bucketnames: "your-loki-chunks-bucket"   # CHANGE THIS
+        region: "us-east-1"                      # CHANGE THIS
+        s3forcepathstyle: false
+    ruler:
+      storage:
+        s3:
+          bucketnames: "your-loki-ruler-bucket"  # CHANGE THIS
+
+# --- Mimir (Metrics) ---
+mimir-distributed:
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/YOUR_ROLE_NAME"  # CHANGE THIS
+  mimir:
+    structuredConfig:
+      common:
+        storage:
+          s3:
+            bucket_name: "your-mimir-blocks-bucket"  # CHANGE THIS
+            region: "us-east-1"                      # CHANGE THIS
+
+# --- Tempo (Traces) ---
+tempo-distributed:
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/YOUR_ROLE_NAME"  # CHANGE THIS
+  storage:
+    trace:
+      s3:
+        bucket: "your-tempo-traces-bucket"   # CHANGE THIS
+        region: "us-east-1"                  # CHANGE THIS
+        forcepathstyle: false

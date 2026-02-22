@@ -1,14 +1,18 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mltp-stack.fullname" . }}-alloy-ds-config
+  name: {{ include "lgtm-stack.fullname" . }}-alloy-ds-config
   labels:
-    {{- include "mltp-stack.labels" . | nindent 4 }}
+    {{- include "lgtm-stack.labels" . | nindent 4 }}
 data:
   config.alloy: |
     // ============================================================================
-    // LOGS: Discovery and Collection
+    // LGTM-STACK: Alloy DaemonSet Config (Logs + Metrics)
+    // Cluster: {{ .Values.global.clusterName }}
+    // Tenant: {{ .Values.global.tenantId }}
     // ============================================================================
+
+    // --- LOG COLLECTION ---
     discovery.kubernetes "pods" {
       role = "pod"
     }
@@ -16,21 +20,18 @@ data:
     discovery.relabel "pod_logs" {
       targets = discovery.kubernetes.pods.targets
 
-      // Drop pods without logs
       rule {
         source_labels = ["__meta_kubernetes_pod_phase"]
         regex         = "Pending|Succeeded|Failed|Completed"
         action        = "drop"
       }
 
-      // Drop specific namespaces
       rule {
         source_labels = ["__meta_kubernetes_namespace"]
         regex         = "kube-system|kube-public|kube-node-lease|argocd.*"
         action        = "drop"
       }
 
-      // Standard labels
       rule {
         source_labels = ["__meta_kubernetes_namespace"]
         target_label  = "namespace"
@@ -51,7 +52,6 @@ data:
         target_label  = "node"
       }
 
-      // Job label: namespace/container
       rule {
         source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_container_name"]
         separator     = "/"
@@ -71,7 +71,6 @@ data:
         }
       }
 
-      // Drop verbose logs to reduce volume
       stage.match {
         selector = "{namespace=~\"{{ .Release.Namespace }}|kube-system\"}"
         stage.drop {
@@ -89,18 +88,25 @@ data:
       }
     }
 
-    // ============================================================================
-    // METRICS: Discovery
-    // ============================================================================
+    // --- METRIC COLLECTION ---
     discovery.kubernetes "metrics_pods" { role = "pod" }
     discovery.kubernetes "metrics_nodes" { role = "node" }
 
-    // Pod metrics relabeling
     discovery.relabel "metrics_pods" {
       targets = discovery.kubernetes.metrics_pods.targets
       rule {
         source_labels = ["__meta_kubernetes_pod_phase"]
         regex         = "Running"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        regex         = "kube-state-metrics"
+        action        = "drop"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape", "__meta_kubernetes_pod_container_port_name"]
+        regex         = "true|.*metrics.*"
         action        = "keep"
       }
       rule {
@@ -111,9 +117,16 @@ data:
         source_labels = ["__meta_kubernetes_pod_name"]
         target_label  = "pod"
       }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+      }
     }
 
-    // Node Exporter relabeling (assumes node-exporter is running on port 9100)
     discovery.relabel "node_exporter" {
       targets = discovery.kubernetes.metrics_nodes.targets
       rule {
@@ -123,12 +136,15 @@ data:
         target_label  = "__address__"
       }
       rule {
+        source_labels = ["__meta_kubernetes_node_name"]
+        target_label  = "node"
+      }
+      rule {
         target_label = "job"
         replacement  = "node-exporter"
       }
     }
 
-    // cAdvisor discovery
     discovery.relabel "cadvisor" {
       targets = discovery.kubernetes.metrics_nodes.targets
       rule {
@@ -146,30 +162,34 @@ data:
         replacement  = "https"
       }
       rule {
+        source_labels = ["__meta_kubernetes_node_name"]
+        target_label  = "node"
+      }
+      rule {
         target_label = "job"
         replacement  = "cadvisor"
       }
     }
 
-    // ============================================================================
-    // METRICS: Scrape & Forward
-    // ============================================================================
     prometheus.scrape "pods" {
       targets    = discovery.relabel.metrics_pods.output
       forward_to = [prometheus.relabel.add_cluster.receiver]
       scrape_interval = "60s"
+      scrape_timeout  = "30s"
     }
 
     prometheus.scrape "node_exporter" {
       targets    = discovery.relabel.node_exporter.output
       forward_to = [prometheus.relabel.add_cluster.receiver]
       scrape_interval = "60s"
+      scrape_timeout  = "30s"
     }
 
     prometheus.scrape "cadvisor" {
       targets    = discovery.relabel.cadvisor.output
       forward_to = [prometheus.relabel.filter_cadvisor.receiver]
       scrape_interval = "120s"
+      scrape_timeout  = "60s"
       bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
       tls_config { insecure_skip_verify = true }
     }
@@ -179,6 +199,11 @@ data:
       rule {
         source_labels = ["__name__"]
         regex         = "container_fs_(reads|writes|io_time|io_time_weighted).*"
+        action        = "drop"
+      }
+      rule {
+        source_labels = ["namespace"]
+        regex         = "kube-system|kube-public|kube-node-lease"
         action        = "drop"
       }
     }

@@ -1,25 +1,45 @@
 # =============================================================================
-# MLTP-STACK MASTER CONFIGURATION (Optimized for Staging)
+# LGTM-STACK: Unified Observability Configuration
+# =============================================================================
+# Loki (Logs) · Grafana (Visualization) · Tempo (Traces) · Mimir (Metrics)
+# Distributed mode with MinIO as default storage backend
 # =============================================================================
 
 # --- Global Settings ---
 global:
-  clusterName: "mltp-cluster"
+  clusterName: "lgtm-cluster"
   tenantId: "tenant1"
-  namespace: "grafana-monitoring"
+
+  # Retention: How long to keep data before auto-deletion
+  # All three backends default to 7 days (168h)
+  retention:
+    logs: "168h"     # Loki — 7 days
+    metrics: "168h"  # Mimir — 7 days
+    traces: "168h"   # Tempo — 7 days
+
   storage:
-    type: "s3"
+    type: "minio"
     s3:
       region: "us-east-1"
       endpoint: ""
-      bucketPrefix: "mltp"
+      bucketPrefix: "lgtm"
 
-# --- MinIO (Local/Generic Storage) ---
+# --- MinIO (In-Cluster S3-Compatible Storage) ---
+# MinIO runs as a pod with its own PVC. All components (Loki, Mimir, Tempo)
+# write to separate "buckets" inside this single MinIO instance.
+# Disable this and use values/values-eks-s3.yaml when deploying to AWS with real S3.
+#
+# Sizing guide:
+#   This PVC holds ALL your logs, metrics, and traces for the full retention period.
+#   Formula: (daily_ingestion_volume × retention_days × compression_ratio)
+#   Default 20Gi handles typical staging workloads with 7-day retention.
+#   Increase for production: 50-100Gi for high-volume environments.
 minio:
-  enabled: true # Enable by default for "One-Click" setup
+  enabled: true
   auth:
     rootUser: "admin"
     rootPassword: "password123"
+  defaultBuckets: "loki-chunks,loki-ruler,mimir-blocks,mimir-alertmanager,mimir-ruler,tempo-traces"
   persistence:
     enabled: true
     size: 20Gi
@@ -29,7 +49,7 @@ grafana:
   adminPassword: admin
   persistence:
     enabled: true
-    size: 10Gi
+    size: 1Gi    # Grafana stores dashboards/config, not telemetry data
   sidecar:
     dashboards:
       enabled: true
@@ -81,18 +101,42 @@ grafana:
         secureJsonData:
           httpHeaderValue1: "{{ .Values.global.tenantId }}"
 
-# --- Loki (Distributed Mode) ---
+# =============================================================================
+# LOKI — Logs Backend (Distributed Mode)
+# =============================================================================
 loki:
   deploymentMode: Distributed
   loki:
     commonConfig:
       replication_factor: 2
+    schemaConfig:
+      configs:
+        - from: "2024-04-01"
+          store: tsdb
+          object_store: s3
+          schema: v13
+          index:
+            prefix: loki_index_
+            period: 24h
     storage_config:
       aws:
         bucketnames: loki-chunks
         region: "{{ .Values.global.storage.s3.region }}"
         endpoint: "{{ .Values.global.storage.s3.endpoint }}"
-        s3forcepathstyle: true # Set to true for MinIO
+        s3forcepathstyle: true
+    limits_config:
+      allow_structured_metadata: true
+      volume_enabled: true
+      retention_period: "{{ .Values.global.retention.logs }}"
+      ingestion_rate_mb: 10
+      ingestion_burst_size_mb: 15
+      per_stream_rate_limit: 3MB
+      per_stream_rate_limit_burst: 10MB
+      max_line_size: 5MB
+      max_line_size_truncate: true
+      query_timeout: 3m
+      max_query_parallelism: 16
+      split_queries_by_interval: 15m
     compactor:
       retention_enabled: true
     ruler:
@@ -109,6 +153,27 @@ loki:
       limits:
         cpu: 1
         memory: 1Gi
+    persistence:
+      enabled: true
+      size: 5Gi   # WAL — holds minutes of data before flush to MinIO/S3
+  querier:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  queryFrontend:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
   distributor:
     replicas: 2
     resources:
@@ -118,14 +183,57 @@ loki:
       limits:
         cpu: 1
         memory: 256Mi
+  compactor:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  gateway:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 64Mi
+  chunksCache:
+    allocatedMemory: 2048
+    replicas: 1
+  resultsCache:
+    allocatedMemory: 512
+    replicas: 1
+  minio:
+    enabled: false
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  singleBinary:
+    replicas: 0
 
-# --- Mimir (Distributed Mode) ---
+# =============================================================================
+# MIMIR — Metrics Backend (Distributed Mode)
+# =============================================================================
 mimir-distributed:
   mimir:
     structuredConfig:
+      ingest_storage:
+        enabled: false
       ingester:
         ring:
           replication_factor: 2
+      limits:
+        ingestion_rate: 20000
+        ingestion_burst_size: 100000
+        max_global_series_per_user: 100000
+        compactor_blocks_retention_period: "{{ .Values.global.retention.metrics }}"
       common:
         storage:
           backend: s3
@@ -135,14 +243,101 @@ mimir-distributed:
             endpoint: "{{ .Values.global.storage.s3.endpoint }}"
   ingester:
     replicas: 2
+    persistentVolume:
+      enabled: true
+      size: 5Gi   # WAL — holds minutes of data before flush to MinIO/S3
     resources:
       requests:
         cpu: 200m
         memory: 512Mi
       limits:
         memory: 512Mi
+    zoneAwareReplication:
+      enabled: false
+  distributor:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  querier:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  query_frontend:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  store_gateway:
+    replicas: 1
+    persistentVolume:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+    zoneAwareReplication:
+      enabled: false
+  compactor:
+    replicas: 1
+    persistentVolume:
+      enabled: true
+      size: 5Gi   # Scratch space for block compaction
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  gateway:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 64Mi
+  chunks-cache:
+    enabled: true
+    replicas: 1
+    allocatedMemory: 256
+  index-cache:
+    enabled: true
+    replicas: 1
+    allocatedMemory: 256
+  results-cache:
+    enabled: true
+    replicas: 1
+    allocatedMemory: 256
+  kafka:
+    enabled: false
+  minio:
+    enabled: false
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  singleBinary:
+    replicas: 0
 
-# --- Tempo (Distributed Mode) ---
+# =============================================================================
+# TEMPO — Traces Backend (Distributed Mode)
+# =============================================================================
 tempo-distributed:
   storage:
     trace:
@@ -154,16 +349,81 @@ tempo-distributed:
         forcepathstyle: true
   ingester:
     replicas: 2
+    config:
+      replication_factor: 2
+      trace_idle_period: "{{ .Values.global.retention.traces }}"
+    persistentVolume:
+      enabled: true
+      size: 5Gi   # WAL — holds minutes of data before flush to MinIO/S3
     resources:
       requests:
         cpu: 200m
         memory: 512Mi
       limits:
+        cpu: 400m
         memory: 512Mi
+  distributor:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  querier:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  queryFrontend:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 128Mi
+  compactor:
+    replicas: 1
+    config:
+      compaction:
+        block_retention: "{{ .Values.global.retention.traces }}"
+    persistentVolume:
+      enabled: true
+      size: 5Gi   # Scratch space for block compaction
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  gateway:
+    enabled: false
+  traces:
+    otlp:
+      grpc:
+        enabled: true
+      http:
+        enabled: false
+  minio:
+    enabled: false
+  multitenancyEnabled: false
 
-# --- Alloy-DS (DaemonSet for Logs & Metrics) ---
+# =============================================================================
+# ALLOY — Telemetry Collectors
+# =============================================================================
+
+# --- Alloy-DS (DaemonSet: Logs + Metrics) ---
 alloy-ds:
   alloy:
+    mounts:
+      varlog: true
+      dockercontainers: true
     resources:
       requests:
         cpu: 200m
@@ -171,17 +431,34 @@ alloy-ds:
       limits:
         cpu: 500m
         memory: 512Mi
+  tolerations:
+    - operator: "Exists"
   configMap:
     create: false
-    name: mltp-stack-alloy-ds-config
+    name: lgtm-stack-alloy-ds-config
     key: config.alloy
 
-# --- Alloy-Traces (StatefulSet for Distributed Traces) ---
+# --- Alloy-Traces (StatefulSet: Distributed Traces) ---
 alloy-traces:
   controller:
     type: 'statefulset'
     replicas: 2
   alloy:
+    mounts:
+      varlog: false
+      dockercontainers: false
+    clustering:
+      enabled: true
+      name: "alloy-traces"
+    extraPorts:
+      - name: "otlp-grpc"
+        port: 4317
+        targetPort: 4317
+        protocol: "TCP"
+      - name: "otlp-http"
+        port: 4318
+        targetPort: 4318
+        protocol: "TCP"
     resources:
       requests:
         cpu: 200m
@@ -191,15 +468,18 @@ alloy-traces:
         memory: 256Mi
   configMap:
     create: false
-    name: mltp-stack-alloy-traces-config
+    name: lgtm-stack-alloy-traces-config
     key: config.alloy
 
-# --- Alloy-KSM (StatefulSet for KSM Metrics) ---
+# --- Alloy-KSM (StatefulSet: Kube State Metrics Scraper) ---
 alloy-ksm:
   controller:
     type: 'statefulset'
     replicas: 1
   alloy:
+    mounts:
+      varlog: false
+      dockercontainers: false
     resources:
       requests:
         cpu: 50m
@@ -209,5 +489,5 @@ alloy-ksm:
         memory: 128Mi
   configMap:
     create: false
-    name: mltp-stack-alloy-ksm-config
+    name: lgtm-stack-alloy-ksm-config
     key: config.alloy

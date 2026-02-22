@@ -1,0 +1,26 @@
+# values-eks-minio.yaml
+# EKS deployment with MinIO as in-cluster storage (no AWS S3 needed)
+#
+# Usage:
+#   helm upgrade --install lgtm-stack . -n observability --create-namespace -f values/values-eks-minio.yaml
+#
+# What to change:
+#   - global.clusterName → your EKS cluster name
+
+global:
+  clusterName: "your-eks-cluster"   # CHANGE THIS
+  tenantId: "tenant1"
+  retention:
+    logs: "168h"
+    metrics: "168h"
+    traces: "168h"
+
+minio:
+  enabled: true
+  auth:
+    rootUser: "admin"
+    rootPassword: "password123"     # CHANGE THIS for production
+  defaultBuckets: "loki-chunks,loki-ruler,mimir-blocks,mimir-alertmanager,mimir-ruler,tempo-traces"
+  persistence:
+    enabled: true
+    size: 20Gi                      # Increase for high-volume production (50-100Gi)

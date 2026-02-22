@@ -1,50 +1,307 @@
-# values-local.yaml
-# Optimized for local development with MinIO
+# =============================================================================
+# values-local.yaml — Lightweight Local Development Profile
+# =============================================================================
+# Optimized for laptops: single replicas, no caches, minimal resources.
+# Runs comfortably with Docker Desktop set to 4 CPU / 6 GB RAM.
+#
+# Usage:
+#   ./setup.sh                       (uses this file automatically)
+#   — OR —
+#   helm upgrade --install lgtm-stack . -n observability --create-namespace -f values/values-local.yaml
 
+# --- Global ---
 global:
-  clusterName: "mltp-local"
+  clusterName: "lgtm-local"
   tenantId: "tenant1"
   storage:
     type: "minio"
     s3:
       region: "us-east-1"
-      endpoint: "http://mltp-minio.grafana-monitoring.svc:9000"
+      endpoint: "http://lgtm-stack-minio.observability.svc:9000"
       forcePathStyle: true
 
+# --- MinIO ---
 minio:
   enabled: true
   auth:
     rootUser: "admin"
     rootPassword: "password123"
   defaultBuckets: "loki-chunks,loki-ruler,mimir-blocks,mimir-alertmanager,mimir-ruler,tempo-traces"
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
 
+# --- Grafana (minimal) ---
+grafana:
+  persistence:
+    size: 512Mi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# =============================================================================
+# LOKI — Single-replica distributed mode
+# =============================================================================
 loki:
   loki:
+    commonConfig:
+      replication_factor: 1           # Must match single-replica ingesters
     storage_config:
       aws:
         bucketnames: loki-chunks
-        endpoint: http://mltp-minio.{{ .Release.Namespace }}.svc:9000
+        endpoint: http://lgtm-stack-minio.observability.svc:9000
         s3forcepathstyle: true
     ruler:
       storage:
         s3:
           bucketnames: loki-ruler
-  # ... (other overrides for local)
+  ingester:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    persistence:
+      enabled: true
+      size: 2Gi
+  querier:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+  queryFrontend:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+  distributor:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+  compactor:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+  gateway:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+  # Disable caches entirely — not needed for local dev
+  chunksCache:
+    replicas: 0
+  resultsCache:
+    replicas: 0
 
+# =============================================================================
+# MIMIR — Single-replica distributed mode
+# =============================================================================
 mimir-distributed:
   mimir:
     structuredConfig:
+      ingester:
+        ring:
+          replication_factor: 1       # Must match single-replica ingesters
       common:
         storage:
           s3:
             bucket_name: mimir-blocks
-            endpoint: mltp-minio.{{ .Release.Namespace }}.svc:9000
-  # ... (other overrides for local)
+            endpoint: lgtm-stack-minio.observability.svc:9000
+  ingester:
+    replicas: 1
+    persistentVolume:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 256Mi
+  distributor:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  querier:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  query_frontend:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  store_gateway:
+    replicas: 1
+    persistentVolume:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  compactor:
+    replicas: 1
+    persistentVolume:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  gateway:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 64Mi
+  # Disable all caches — not needed for local dev
+  chunks-cache:
+    enabled: false
+  index-cache:
+    enabled: false
+  results-cache:
+    enabled: false
 
+# =============================================================================
+# TEMPO — Single-replica distributed mode
+# =============================================================================
 tempo-distributed:
+  ingester:
+    replicas: 1
+    config:
+      replication_factor: 1           # Must match single-replica ingesters
+    persistentVolume:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+  distributor:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  querier:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
+  queryFrontend:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 64Mi
+  compactor:
+    replicas: 1
+    persistentVolume:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
   storage:
     trace:
       s3:
         bucket: tempo-traces
-        endpoint: mltp-minio.{{ .Release.Namespace }}.svc:9000
+        endpoint: lgtm-stack-minio.observability.svc:9000
         forcepathstyle: true
+
+# =============================================================================
+# ALLOY — Reduced for local
+# =============================================================================
+alloy-ds:
+  alloy:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+alloy-traces:
+  controller:
+    replicas: 1
+  alloy:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+
+alloy-ksm:
+  alloy:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi

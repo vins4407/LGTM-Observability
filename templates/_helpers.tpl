@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "mltp-stack.name" -}}
+{{- define "lgtm-stack.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "mltp-stack.fullname" -}}
+{{- define "lgtm-stack.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -24,16 +24,16 @@ Create a default fully qualified app name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "mltp-stack.chart" -}}
+{{- define "lgtm-stack.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "mltp-stack.labels" -}}
-helm.sh/chart: {{ include "mltp-stack.chart" . }}
-{{ include "mltp-stack.selectorLabels" . }}
+{{- define "lgtm-stack.labels" -}}
+helm.sh/chart: {{ include "lgtm-stack.chart" . }}
+{{ include "lgtm-stack.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -43,7 +43,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "mltp-stack.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "mltp-stack.name" . }}
+{{- define "lgtm-stack.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "lgtm-stack.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}

@@ -1,26 +1,32 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mltp-stack.fullname" . }}-alloy-traces-config
+  name: {{ include "lgtm-stack.fullname" . }}-alloy-traces-config
   labels:
-    {{- include "mltp-stack.labels" . | nindent 4 }}
+    {{- include "lgtm-stack.labels" . | nindent 4 }}
 data:
   config.alloy: |
-    // MLTP-STACK: Alloy Traces Config (Distributed Tracing)
+    // ============================================================================
+    // LGTM-STACK: Alloy Traces Config (OTLP Receiver → Tempo)
     // Cluster: {{ .Values.global.clusterName }}
     // Tenant: {{ .Values.global.tenantId }}
+    // ============================================================================
 
     otelcol.receiver.otlp "default" {
       grpc { endpoint = "0.0.0.0:4317" }
       http { endpoint = "0.0.0.0:4318" }
       output {
-        traces  = [otelcol.processor.batch.default.input]
+        traces = [
+          otelcol.processor.batch.default.input,
+          otelcol.connector.servicegraph.default.input,
+        ]
       }
     }
 
     otelcol.processor.batch "default" {
       timeout = "3s"
       send_batch_size = 512
+      send_batch_max_size = 1024
       output {
         traces = [otelcol.processor.attributes.default.input]
       }
@@ -41,6 +47,35 @@ data:
       client {
         endpoint = "tempo-distributed-distributor.{{ .Release.Namespace }}.svc.cluster.local:4317"
         tls { insecure = true }
+        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+      }
+    }
+
+    // --- Service Graph Metrics (sent to Mimir) ---
+    otelcol.connector.servicegraph "default" {
+      dimensions = [
+        "http.method",
+        "http.target",
+        "cluster",
+        "namespace",
+        "service",
+      ]
+      store {
+        ttl = "2s"
+        max_items = 5000
+      }
+      output {
+        metrics = [otelcol.exporter.prometheus.service_graphs.input]
+      }
+    }
+
+    otelcol.exporter.prometheus "service_graphs" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+    }
+
+    prometheus.remote_write "mimir" {
+      endpoint {
+        url = "http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
         headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
       }
     }

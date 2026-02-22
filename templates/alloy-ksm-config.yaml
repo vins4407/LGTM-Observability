@@ -1,14 +1,16 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mltp-stack.fullname" . }}-alloy-ksm-config
+  name: {{ include "lgtm-stack.fullname" . }}-alloy-ksm-config
   labels:
-    {{- include "mltp-stack.labels" . | nindent 4 }}
+    {{- include "lgtm-stack.labels" . | nindent 4 }}
 data:
   config.alloy: |
-    // MLTP-STACK: Alloy KSM Config (Kube State Metrics)
+    // ============================================================================
+    // LGTM-STACK: Alloy KSM Config (Kube State Metrics Scraper)
     // Cluster: {{ .Values.global.clusterName }}
     // Tenant: {{ .Values.global.tenantId }}
+    // ============================================================================
 
     discovery.kubernetes "kube_state_metrics_pods" { role = "pod" }
 
@@ -20,21 +22,50 @@ data:
         action        = "keep"
       }
       rule {
+        source_labels = ["__meta_kubernetes_pod_phase"]
+        regex         = "Running"
+        action        = "keep"
+      }
+      rule {
         source_labels = ["__meta_kubernetes_pod_ip"]
         target_label  = "__address__"
         replacement   = "$1:8080"
       }
       rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
         target_label = "job"
         replacement  = "kube-state-metrics"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "instance"
       }
     }
 
     prometheus.scrape "kube_state_metrics" {
       targets    = discovery.relabel.kube_state_metrics.output
-      forward_to = [prometheus.relabel.add_cluster.receiver]
+      forward_to = [prometheus.relabel.filter_ksm.receiver]
       scrape_interval = "60s"
+      scrape_timeout  = "30s"
+      sample_limit    = 50000
       honor_labels    = true
+    }
+
+    prometheus.relabel "filter_ksm" {
+      forward_to = [prometheus.relabel.add_cluster.receiver]
+      rule {
+        source_labels = ["__name__"]
+        regex = "kube_.*_annotations|kube_pod_init_container.*|kube_pod_ips|kube_pod_overhead.*"
+        action = "drop"
+      }
+      rule {
+        source_labels = ["namespace"]
+        regex = "kube-public|kube-node-lease"
+        action = "drop"
+      }
     }
 
     prometheus.relabel "add_cluster" {
