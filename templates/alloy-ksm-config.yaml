@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mltp-stack.fullname" . }}-alloy-ksm-config
+  labels:
+    {{- include "mltp-stack.labels" . | nindent 4 }}
+data:
+  config.alloy: |
+    // MLTP-STACK: Alloy KSM Config (Kube State Metrics)
+    // Cluster: {{ .Values.global.clusterName }}
+    // Tenant: {{ .Values.global.tenantId }}
+
+    discovery.kubernetes "kube_state_metrics_pods" { role = "pod" }
+
+    discovery.relabel "kube_state_metrics" {
+      targets = discovery.kubernetes.kube_state_metrics_pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        regex         = "kube-state-metrics"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_ip"]
+        target_label  = "__address__"
+        replacement   = "$1:8080"
+      }
+      rule {
+        target_label = "job"
+        replacement  = "kube-state-metrics"
+      }
+    }
+
+    prometheus.scrape "kube_state_metrics" {
+      targets    = discovery.relabel.kube_state_metrics.output
+      forward_to = [prometheus.relabel.add_cluster.receiver]
+      scrape_interval = "60s"
+      honor_labels    = true
+    }
+
+    prometheus.relabel "add_cluster" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+      rule {
+        target_label = "cluster"
+        replacement  = "{{ .Values.global.clusterName }}"
+      }
+    }
+
+    prometheus.remote_write "mimir" {
+      endpoint {
+        url = "http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
+        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+      }
+    }

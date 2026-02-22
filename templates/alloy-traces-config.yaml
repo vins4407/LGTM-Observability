@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mltp-stack.fullname" . }}-alloy-traces-config
+  labels:
+    {{- include "mltp-stack.labels" . | nindent 4 }}
+data:
+  config.alloy: |
+    // MLTP-STACK: Alloy Traces Config (Distributed Tracing)
+    // Cluster: {{ .Values.global.clusterName }}
+    // Tenant: {{ .Values.global.tenantId }}
+
+    otelcol.receiver.otlp "default" {
+      grpc { endpoint = "0.0.0.0:4317" }
+      http { endpoint = "0.0.0.0:4318" }
+      output {
+        traces  = [otelcol.processor.batch.default.input]
+      }
+    }
+
+    otelcol.processor.batch "default" {
+      timeout = "3s"
+      send_batch_size = 512
+      output {
+        traces = [otelcol.processor.attributes.default.input]
+      }
+    }
+
+    otelcol.processor.attributes "default" {
+      action {
+        key = "cluster"
+        value = "{{ .Values.global.clusterName }}"
+        action = "insert"
+      }
+      output {
+        traces = [otelcol.exporter.otlp.tempo.input]
+      }
+    }
+
+    otelcol.exporter.otlp "tempo" {
+      client {
+        endpoint = "tempo-distributed-distributor.{{ .Release.Namespace }}.svc.cluster.local:4317"
+        tls { insecure = true }
+        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+      }
+    }

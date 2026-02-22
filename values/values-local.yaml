@@ -1,0 +1,50 @@
+# values-local.yaml
+# Optimized for local development with MinIO
+
+global:
+  clusterName: "mltp-local"
+  tenantId: "tenant1"
+  storage:
+    type: "minio"
+    s3:
+      region: "us-east-1"
+      endpoint: "http://mltp-minio.grafana-monitoring.svc:9000"
+      forcePathStyle: true
+
+minio:
+  enabled: true
+  auth:
+    rootUser: "admin"
+    rootPassword: "password123"
+  defaultBuckets: "loki-chunks,loki-ruler,mimir-blocks,mimir-alertmanager,mimir-ruler,tempo-traces"
+
+loki:
+  loki:
+    storage_config:
+      aws:
+        bucketnames: loki-chunks
+        endpoint: http://mltp-minio.{{ .Release.Namespace }}.svc:9000
+        s3forcepathstyle: true
+    ruler:
+      storage:
+        s3:
+          bucketnames: loki-ruler
+  # ... (other overrides for local)
+
+mimir-distributed:
+  mimir:
+    structuredConfig:
+      common:
+        storage:
+          s3:
+            bucket_name: mimir-blocks
+            endpoint: mltp-minio.{{ .Release.Namespace }}.svc:9000
+  # ... (other overrides for local)
+
+tempo-distributed:
+  storage:
+    trace:
+      s3:
+        bucket: tempo-traces
+        endpoint: mltp-minio.{{ .Release.Namespace }}.svc:9000
+        forcepathstyle: true

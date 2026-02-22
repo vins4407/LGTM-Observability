@@ -1,0 +1,199 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mltp-stack.fullname" . }}-alloy-ds-config
+  labels:
+    {{- include "mltp-stack.labels" . | nindent 4 }}
+data:
+  config.alloy: |
+    // ============================================================================
+    // LOGS: Discovery and Collection
+    // ============================================================================
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "pod_logs" {
+      targets = discovery.kubernetes.pods.targets
+
+      // Drop pods without logs
+      rule {
+        source_labels = ["__meta_kubernetes_pod_phase"]
+        regex         = "Pending|Succeeded|Failed|Completed"
+        action        = "drop"
+      }
+
+      // Drop specific namespaces
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "kube-system|kube-public|kube-node-lease|argocd.*"
+        action        = "drop"
+      }
+
+      // Standard labels
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+      }
+
+      // Job label: namespace/container
+      rule {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        target_label  = "job"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pod_logs.output
+      forward_to = [loki.process.add_cluster_label.receiver]
+    }
+
+    loki.process "add_cluster_label" {
+      stage.static_labels {
+        values = {
+          cluster = "{{ .Values.global.clusterName }}",
+        }
+      }
+
+      // Drop verbose logs to reduce volume
+      stage.match {
+        selector = "{namespace=~\"{{ .Release.Namespace }}|kube-system\"}"
+        stage.drop {
+          expression = ".*health.*|.*readiness.*|.*liveness.*"
+        }
+      }
+
+      forward_to = [loki.write.default.receiver]
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki-gateway.{{ .Release.Namespace }}.svc.cluster.local/loki/api/v1/push"
+        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+      }
+    }
+
+    // ============================================================================
+    // METRICS: Discovery
+    // ============================================================================
+    discovery.kubernetes "metrics_pods" { role = "pod" }
+    discovery.kubernetes "metrics_nodes" { role = "node" }
+
+    // Pod metrics relabeling
+    discovery.relabel "metrics_pods" {
+      targets = discovery.kubernetes.metrics_pods.targets
+      rule {
+        source_labels = ["__meta_kubernetes_pod_phase"]
+        regex         = "Running"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+    }
+
+    // Node Exporter relabeling (assumes node-exporter is running on port 9100)
+    discovery.relabel "node_exporter" {
+      targets = discovery.kubernetes.metrics_nodes.targets
+      rule {
+        source_labels = ["__address__"]
+        regex         = "([^:]+)(?::\\d+)?"
+        replacement   = "$1:9100"
+        target_label  = "__address__"
+      }
+      rule {
+        target_label = "job"
+        replacement  = "node-exporter"
+      }
+    }
+
+    // cAdvisor discovery
+    discovery.relabel "cadvisor" {
+      targets = discovery.kubernetes.metrics_nodes.targets
+      rule {
+        source_labels = ["__address__"]
+        regex         = "([^:]+)(?::\\d+)?"
+        target_label  = "__address__"
+        replacement   = "${1}:10250"
+      }
+      rule {
+        target_label = "__metrics_path__"
+        replacement  = "/metrics/cadvisor"
+      }
+      rule {
+        target_label = "__scheme__"
+        replacement  = "https"
+      }
+      rule {
+        target_label = "job"
+        replacement  = "cadvisor"
+      }
+    }
+
+    // ============================================================================
+    // METRICS: Scrape & Forward
+    // ============================================================================
+    prometheus.scrape "pods" {
+      targets    = discovery.relabel.metrics_pods.output
+      forward_to = [prometheus.relabel.add_cluster.receiver]
+      scrape_interval = "60s"
+    }
+
+    prometheus.scrape "node_exporter" {
+      targets    = discovery.relabel.node_exporter.output
+      forward_to = [prometheus.relabel.add_cluster.receiver]
+      scrape_interval = "60s"
+    }
+
+    prometheus.scrape "cadvisor" {
+      targets    = discovery.relabel.cadvisor.output
+      forward_to = [prometheus.relabel.filter_cadvisor.receiver]
+      scrape_interval = "120s"
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      tls_config { insecure_skip_verify = true }
+    }
+
+    prometheus.relabel "filter_cadvisor" {
+      forward_to = [prometheus.relabel.add_cluster.receiver]
+      rule {
+        source_labels = ["__name__"]
+        regex         = "container_fs_(reads|writes|io_time|io_time_weighted).*"
+        action        = "drop"
+      }
+    }
+
+    prometheus.relabel "add_cluster" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+      rule {
+        target_label = "cluster"
+        replacement  = "{{ .Values.global.clusterName }}"
+      }
+    }
+
+    prometheus.remote_write "mimir" {
+      endpoint {
+        url = "http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
+        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+      }
+    }

@@ -1,0 +1,213 @@
+# =============================================================================
+# MLTP-STACK MASTER CONFIGURATION (Optimized for Staging)
+# =============================================================================
+
+# --- Global Settings ---
+global:
+  clusterName: "mltp-cluster"
+  tenantId: "tenant1"
+  namespace: "grafana-monitoring"
+  storage:
+    type: "s3"
+    s3:
+      region: "us-east-1"
+      endpoint: ""
+      bucketPrefix: "mltp"
+
+# --- MinIO (Local/Generic Storage) ---
+minio:
+  enabled: true # Enable by default for "One-Click" setup
+  auth:
+    rootUser: "admin"
+    rootPassword: "password123"
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# --- Grafana ---
+grafana:
+  adminPassword: admin
+  persistence:
+    enabled: true
+    size: 10Gi
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+      label: grafana_dashboard
+      labelValue: "1"
+    datasources:
+      enabled: true
+      searchNamespace: ALL
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Loki
+        uid: loki
+        type: loki
+        url: http://loki-gateway.{{ .Release.Namespace }}.svc.cluster.local
+        jsonData:
+          httpHeaderName1: "X-Scope-OrgID"
+          maxLines: 1000
+        secureJsonData:
+          httpHeaderValue1: "{{ .Values.global.tenantId }}"
+      - name: Mimir
+        uid: mimir
+        type: prometheus
+        url: http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/prometheus
+        jsonData:
+          httpHeaderName1: "X-Scope-OrgID"
+          timeInterval: "60s"
+        secureJsonData:
+          httpHeaderValue1: "{{ .Values.global.tenantId }}"
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        url: http://tempo-distributed-query-frontend.{{ .Release.Namespace }}.svc.cluster.local:3200
+        jsonData:
+          httpHeaderName1: "X-Scope-OrgID"
+          tracesToLogs:
+            datasourceUid: "loki"
+            tags: ["job", "instance", "pod", "namespace"]
+            mappedTags: [{ key: "service.name", value: "service" }]
+          tracesToMetrics:
+            datasourceUid: "mimir"
+            tags: [{ key: "service.name", value: "service" }, { key: "job" }]
+          serviceMap:
+            datasourceUid: "mimir"
+          nodeGraph:
+            enabled: true
+        secureJsonData:
+          httpHeaderValue1: "{{ .Values.global.tenantId }}"
+
+# --- Loki (Distributed Mode) ---
+loki:
+  deploymentMode: Distributed
+  loki:
+    commonConfig:
+      replication_factor: 2
+    storage_config:
+      aws:
+        bucketnames: loki-chunks
+        region: "{{ .Values.global.storage.s3.region }}"
+        endpoint: "{{ .Values.global.storage.s3.endpoint }}"
+        s3forcepathstyle: true # Set to true for MinIO
+    compactor:
+      retention_enabled: true
+    ruler:
+      storage:
+        type: s3
+        s3:
+          bucketnames: loki-ruler
+  ingester:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 1Gi
+  distributor:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1
+        memory: 256Mi
+
+# --- Mimir (Distributed Mode) ---
+mimir-distributed:
+  mimir:
+    structuredConfig:
+      ingester:
+        ring:
+          replication_factor: 2
+      common:
+        storage:
+          backend: s3
+          s3:
+            bucket_name: mimir-blocks
+            region: "{{ .Values.global.storage.s3.region }}"
+            endpoint: "{{ .Values.global.storage.s3.endpoint }}"
+  ingester:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+
+# --- Tempo (Distributed Mode) ---
+tempo-distributed:
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: tempo-traces
+        region: "{{ .Values.global.storage.s3.region }}"
+        endpoint: "{{ .Values.global.storage.s3.endpoint }}"
+        forcepathstyle: true
+  ingester:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+
+# --- Alloy-DS (DaemonSet for Logs & Metrics) ---
+alloy-ds:
+  alloy:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  configMap:
+    create: false
+    name: mltp-stack-alloy-ds-config
+    key: config.alloy
+
+# --- Alloy-Traces (StatefulSet for Distributed Traces) ---
+alloy-traces:
+  controller:
+    type: 'statefulset'
+    replicas: 2
+  alloy:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  configMap:
+    create: false
+    name: mltp-stack-alloy-traces-config
+    key: config.alloy
+
+# --- Alloy-KSM (StatefulSet for KSM Metrics) ---
+alloy-ksm:
+  controller:
+    type: 'statefulset'
+    replicas: 1
+  alloy:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+  configMap:
+    create: false
+    name: mltp-stack-alloy-ksm-config
+    key: config.alloy
