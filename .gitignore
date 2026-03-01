@@ -1,0 +1,19 @@
+# Helm dependencies (downloaded via `helm dependency update`)
+charts/
+Chart.lock
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+*.bak

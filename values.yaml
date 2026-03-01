@@ -20,13 +20,14 @@ global:
   storage:
     type: "minio"
     s3:
+      # Region is required by S3 SDKs but ignored by MinIO - any value works
       region: "us-east-1"
       endpoint: ""
       bucketPrefix: "lgtm"
 
 # --- MinIO (In-Cluster S3-Compatible Storage) ---
-# MinIO runs as a pod with its own PVC. All components (Loki, Mimir, Tempo)
-# write to separate "buckets" inside this single MinIO instance.
+# Using official MinIO Helm chart (https://charts.min.io/)
+# All components (Loki, Mimir, Tempo) write to separate "buckets" inside this single MinIO instance.
 # Disable this and use values/values-eks-s3.yaml when deploying to AWS with real S3.
 #
 # Sizing guide:
@@ -36,13 +37,31 @@ global:
 #   Increase for production: 50-100Gi for high-volume environments.
 minio:
   enabled: true
-  auth:
-    rootUser: "admin"
-    rootPassword: "password123"
-  defaultBuckets: "loki-chunks,loki-ruler,mimir-blocks,mimir-alertmanager,mimir-ruler,tempo-traces"
+  mode: standalone
+  rootUser: "admin"
+  rootPassword: "password123"
+  buckets:
+    - name: loki-chunks
+      policy: none
+    - name: loki-ruler
+      policy: none
+    - name: mimir-blocks
+      policy: none
+    - name: mimir-alertmanager
+      policy: none
+    - name: mimir-ruler
+      policy: none
+    - name: tempo-traces
+      policy: none
   persistence:
     enabled: true
     size: 20Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
 
 # --- Grafana ---
 grafana:
@@ -66,25 +85,26 @@ grafana:
       - name: Loki
         uid: loki
         type: loki
-        url: http://loki-gateway.{{ .Release.Namespace }}.svc.cluster.local
+        url: http://lgtm-stack-loki-gateway.observability.svc.cluster.local
         jsonData:
           httpHeaderName1: "X-Scope-OrgID"
           maxLines: 1000
         secureJsonData:
-          httpHeaderValue1: "{{ .Values.global.tenantId }}"
+          httpHeaderValue1: "tenant1"
       - name: Mimir
         uid: mimir
         type: prometheus
-        url: http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/prometheus
+        url: http://lgtm-stack-mimir-nginx.observability.svc.cluster.local/prometheus
         jsonData:
           httpHeaderName1: "X-Scope-OrgID"
           timeInterval: "60s"
         secureJsonData:
-          httpHeaderValue1: "{{ .Values.global.tenantId }}"
+          httpHeaderValue1: "tenant1"
       - name: Tempo
         uid: tempo
         type: tempo
-        url: http://tempo-distributed-query-frontend.{{ .Release.Namespace }}.svc.cluster.local:3200
+        # Distributed Tempo uses query-frontend on port 3200
+        url: http://lgtm-stack-tempo-query-frontend.observability.svc.cluster.local:3200
         jsonData:
           httpHeaderName1: "X-Scope-OrgID"
           tracesToLogs:
@@ -99,7 +119,7 @@ grafana:
           nodeGraph:
             enabled: true
         secureJsonData:
-          httpHeaderValue1: "{{ .Values.global.tenantId }}"
+          httpHeaderValue1: "tenant1"
 
 # =============================================================================
 # LOKI — Logs Backend (Distributed Mode)
@@ -107,6 +127,15 @@ grafana:
 loki:
   deploymentMode: Distributed
   loki:
+    storage:
+      type: s3
+      bucketNames:
+        chunks: loki-chunks
+        ruler: loki-ruler
+      s3:
+        region: "us-east-1"
+        endpoint: ""
+        s3forcepathstyle: true
     commonConfig:
       replication_factor: 2
     schemaConfig:
@@ -118,16 +147,10 @@ loki:
           index:
             prefix: loki_index_
             period: 24h
-    storage_config:
-      aws:
-        bucketnames: loki-chunks
-        region: "{{ .Values.global.storage.s3.region }}"
-        endpoint: "{{ .Values.global.storage.s3.endpoint }}"
-        s3forcepathstyle: true
     limits_config:
       allow_structured_metadata: true
       volume_enabled: true
-      retention_period: "{{ .Values.global.retention.logs }}"
+      retention_period: "168h"
       ingestion_rate_mb: 10
       ingestion_burst_size_mb: 15
       per_stream_rate_limit: 3MB
@@ -139,11 +162,7 @@ loki:
       split_queries_by_interval: 15m
     compactor:
       retention_enabled: true
-    ruler:
-      storage:
-        type: s3
-        s3:
-          bucketnames: loki-ruler
+      delete_request_store: s3
   ingester:
     replicas: 2
     resources:
@@ -233,14 +252,23 @@ mimir-distributed:
         ingestion_rate: 20000
         ingestion_burst_size: 100000
         max_global_series_per_user: 100000
-        compactor_blocks_retention_period: "{{ .Values.global.retention.metrics }}"
+        compactor_blocks_retention_period: "168h"
       common:
         storage:
           backend: s3
           s3:
             bucket_name: mimir-blocks
-            region: "{{ .Values.global.storage.s3.region }}"
-            endpoint: "{{ .Values.global.storage.s3.endpoint }}"
+            region: "us-east-1"
+            endpoint: ""
+      blocks_storage:
+        s3:
+          bucket_name: mimir-blocks
+      alertmanager_storage:
+        s3:
+          bucket_name: mimir-alertmanager
+      ruler_storage:
+        s3:
+          bucket_name: mimir-ruler
   ingester:
     replicas: 2
     persistentVolume:
@@ -336,22 +364,22 @@ mimir-distributed:
     replicas: 0
 
 # =============================================================================
-# TEMPO — Traces Backend (Distributed Mode)
+# TEMPO — Traces Backend (Distributed Mode - default for production)
 # =============================================================================
 tempo-distributed:
+  enabled: true
   storage:
     trace:
       backend: s3
       s3:
         bucket: tempo-traces
-        region: "{{ .Values.global.storage.s3.region }}"
-        endpoint: "{{ .Values.global.storage.s3.endpoint }}"
+        region: "us-east-1"
+        endpoint: ""
         forcepathstyle: true
   ingester:
     replicas: 2
     config:
       replication_factor: 2
-      trace_idle_period: "{{ .Values.global.retention.traces }}"
     persistentVolume:
       enabled: true
       size: 5Gi   # WAL — holds minutes of data before flush to MinIO/S3
@@ -391,7 +419,7 @@ tempo-distributed:
     replicas: 1
     config:
       compaction:
-        block_retention: "{{ .Values.global.retention.traces }}"
+        block_retention: "168h"
     persistentVolume:
       enabled: true
       size: 5Gi   # Scratch space for block compaction
@@ -415,6 +443,21 @@ tempo-distributed:
   multitenancyEnabled: false
 
 # =============================================================================
+# TEMPO — Traces Backend (Monolithic Mode - for local development)
+# =============================================================================
+# Disabled by default. Enable in values-local.yaml for lightweight local setup.
+tempo:
+  enabled: false
+  tempo:
+    storage:
+      trace:
+        backend: s3
+        s3:
+          bucket: tempo-traces
+          endpoint: ""
+          forcepathstyle: true
+
+# =============================================================================
 # ALLOY — Telemetry Collectors
 # =============================================================================
 
@@ -431,12 +474,12 @@ alloy-ds:
       limits:
         cpu: 500m
         memory: 512Mi
+    configMap:
+      create: false
+      name: lgtm-stack-alloy-ds-config
+      key: config.alloy
   tolerations:
     - operator: "Exists"
-  configMap:
-    create: false
-    name: lgtm-stack-alloy-ds-config
-    key: config.alloy
 
 # --- Alloy-Traces (StatefulSet: Distributed Traces) ---
 alloy-traces:
@@ -466,10 +509,10 @@ alloy-traces:
       limits:
         cpu: 500m
         memory: 256Mi
-  configMap:
-    create: false
-    name: lgtm-stack-alloy-traces-config
-    key: config.alloy
+    configMap:
+      create: false
+      name: lgtm-stack-alloy-traces-config
+      key: config.alloy
 
 # --- Alloy-KSM (StatefulSet: Kube State Metrics Scraper) ---
 alloy-ksm:
@@ -487,7 +530,7 @@ alloy-ksm:
       limits:
         cpu: 200m
         memory: 128Mi
-  configMap:
-    create: false
-    name: lgtm-stack-alloy-ksm-config
-    key: config.alloy
+    configMap:
+      create: false
+      name: lgtm-stack-alloy-ksm-config
+      key: config.alloy

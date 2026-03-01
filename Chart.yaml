@@ -13,24 +13,29 @@ dependencies:
     version: "5.3.0"
     repository: "https://grafana.github.io/helm-charts"
   - name: tempo-distributed
-    version: "1.10.1"
+    version: "1.61.3"
     repository: "https://grafana.github.io/helm-charts"
+    condition: tempo-distributed.enabled
+  - name: tempo
+    version: "1.24.4"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: tempo.enabled
   - name: alloy
     alias: alloy-ds
-    version: "0.6.0"
+    version: "1.6.0"
     repository: "https://grafana.github.io/helm-charts"
   - name: alloy
     alias: alloy-traces
-    version: "0.6.0"
+    version: "1.6.0"
     repository: "https://grafana.github.io/helm-charts"
   - name: alloy
     alias: alloy-ksm
-    version: "0.6.0"
+    version: "1.6.0"
     repository: "https://grafana.github.io/helm-charts"
   - name: grafana
-    version: "8.0.2"
+    version: "10.5.15"
     repository: "https://grafana.github.io/helm-charts"
   - name: minio
-    version: "12.10.3"
-    repository: "https://charts.bitnami.com/bitnami"
+    version: "5.4.0"
+    repository: "https://charts.min.io/"
     condition: minio.enabled

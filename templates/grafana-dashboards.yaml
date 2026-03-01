@@ -1,0 +1,22 @@
+{{- if .Values.grafana.enabled | default true }}
+# =============================================================================
+# GRAFANA DASHBOARDS
+# These ConfigMaps are auto-loaded by Grafana's sidecar
+# =============================================================================
+{{- $files := .Files }}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lgtm-stack.fullname" $ }}-dashboard-{{ $path | base | trimSuffix ".json" | lower | replace "_" "-" }}
+  labels:
+    {{- include "lgtm-stack.labels" $ | nindent 4 }}
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "LGTM Stack"
+data:
+  {{ $path | base }}: |-
+{{ $files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

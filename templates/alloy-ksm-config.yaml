@@ -12,73 +12,146 @@ data:
     // Tenant: {{ .Values.global.tenantId }}
     // ============================================================================
 
-    discovery.kubernetes "kube_state_metrics_pods" { role = "pod" }
+    // ============================================================================
+    // KSM Discovery
+    // ============================================================================
+    discovery.kubernetes "kube_state_metrics_pods" {
+      role = "pod"
+    }
 
+    // ============================================================================
+    // Discovery: Find kube-state-metrics via pod
+    // ============================================================================
     discovery.relabel "kube_state_metrics" {
       targets = discovery.kubernetes.kube_state_metrics_pods.targets
+
+      // Keep only kube-state-metrics pods
       rule {
         source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
         regex         = "kube-state-metrics"
         action        = "keep"
       }
+
+      // Only running pods
       rule {
         source_labels = ["__meta_kubernetes_pod_phase"]
         regex         = "Running"
         action        = "keep"
       }
+
+      // Set the correct port (kube-state-metrics default is 8080)
       rule {
         source_labels = ["__meta_kubernetes_pod_ip"]
         target_label  = "__address__"
         replacement   = "$1:8080"
       }
+
+      // Standard labels
       rule {
         source_labels = ["__meta_kubernetes_namespace"]
         target_label  = "namespace"
       }
+
+      // Job label
       rule {
         target_label = "job"
         replacement  = "kube-state-metrics"
       }
+
+      // Instance label
       rule {
         source_labels = ["__meta_kubernetes_pod_name"]
         target_label  = "instance"
       }
+
+      // Metrics path
+      rule {
+        target_label = "__metrics_path__"
+        replacement  = "/metrics"
+      }
     }
 
+    // ============================================================================
+    // Scrape: kube-state-metrics with cardinality reduction
+    // ============================================================================
     prometheus.scrape "kube_state_metrics" {
       targets    = discovery.relabel.kube_state_metrics.output
-      forward_to = [prometheus.relabel.filter_ksm.receiver]
+      forward_to = [prometheus.relabel.filter_ksm_metrics.receiver]
       scrape_interval = "60s"
       scrape_timeout  = "30s"
       sample_limit    = 50000
       honor_labels    = true
     }
 
-    prometheus.relabel "filter_ksm" {
+    // ============================================================================
+    // Relabeling: Filter high-cardinality kube-state-metrics
+    // ============================================================================
+    prometheus.relabel "filter_ksm_metrics" {
       forward_to = [prometheus.relabel.add_cluster.receiver]
+
+      // Drop very high-cardinality metrics we don't typically need
       rule {
         source_labels = ["__name__"]
-        regex = "kube_.*_annotations|kube_pod_init_container.*|kube_pod_ips|kube_pod_overhead.*"
+        regex = "kube_pod_container_resource_requests_.*|kube_pod_container_resource_limits_.*"
         action = "drop"
       }
+
+      // Drop annotations
+      rule {
+        source_labels = ["__name__"]
+        regex = "kube_.*_annotations"
+        action = "drop"
+      }
+
+      // Drop init containers
+      rule {
+        source_labels = ["__name__"]
+        regex = "kube_pod_init_container.*"
+        action = "drop"
+      }
+
+      // Drop pod IPs
+      rule {
+        source_labels = ["__name__"]
+        regex = "kube_pod_ips|kube_pod_overhead.*"
+        action = "drop"
+      }
+
+      // Drop system namespaces we're not monitoring
       rule {
         source_labels = ["namespace"]
         regex = "kube-public|kube-node-lease"
         action = "drop"
       }
+
+      // Keep important labels intact
+      rule {
+        source_labels = ["__name__"]
+        regex = "kube_.*_labels"
+        action = "keep"
+      }
     }
 
+    // ============================================================================
+    // Add cluster label
+    // ============================================================================
     prometheus.relabel "add_cluster" {
       forward_to = [prometheus.remote_write.mimir.receiver]
+
       rule {
         target_label = "cluster"
         replacement  = "{{ .Values.global.clusterName }}"
       }
     }
 
+    // ============================================================================
+    // Write to Mimir
+    // ============================================================================
     prometheus.remote_write "mimir" {
       endpoint {
-        url = "http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
-        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+        url = "http://{{ include "lgtm-stack.fullname" . }}-mimir-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
+        headers = {
+          "X-Scope-OrgID" = "{{ .Values.global.tenantId }}",
+        }
       }
     }

@@ -12,9 +12,18 @@ data:
     // Tenant: {{ .Values.global.tenantId }}
     // ============================================================================
 
+    // ============================================================================
+    // OTLP RECEIVERS
+    // ============================================================================
     otelcol.receiver.otlp "default" {
-      grpc { endpoint = "0.0.0.0:4317" }
-      http { endpoint = "0.0.0.0:4318" }
+      grpc {
+        endpoint = "0.0.0.0:4317"
+      }
+
+      http {
+        endpoint = "0.0.0.0:4318"
+      }
+
       output {
         traces = [
           otelcol.processor.batch.default.input,
@@ -23,35 +32,61 @@ data:
       }
     }
 
+    // ============================================================================
+    // PROCESSING: Batch traces for efficiency
+    // ============================================================================
     otelcol.processor.batch "default" {
       timeout = "3s"
       send_batch_size = 512
       send_batch_max_size = 1024
+
       output {
         traces = [otelcol.processor.attributes.default.input]
       }
     }
 
+    // ============================================================================
+    // Add cluster attribute to all traces
+    // ============================================================================
     otelcol.processor.attributes "default" {
       action {
         key = "cluster"
         value = "{{ .Values.global.clusterName }}"
         action = "insert"
       }
+
       output {
         traces = [otelcol.exporter.otlp.tempo.input]
       }
     }
 
+    // ============================================================================
+    // EXPORT TO TEMPO
+    // Supports both distributed (tempo-distributed) and monolithic (tempo) modes
+    // - Distributed: tempo-distributed-distributor:4317
+    // - Monolithic: tempo:4317
+    // ============================================================================
     otelcol.exporter.otlp "tempo" {
       client {
-        endpoint = "tempo-distributed-distributor.{{ .Release.Namespace }}.svc.cluster.local:4317"
-        tls { insecure = true }
-        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+        {{- if index .Values "tempo-distributed" "enabled" }}
+        endpoint = "{{ include "lgtm-stack.fullname" . }}-tempo-distributor.{{ .Release.Namespace }}.svc.cluster.local:4317"
+        {{- else }}
+        endpoint = "{{ include "lgtm-stack.fullname" . }}-tempo.{{ .Release.Namespace }}.svc.cluster.local:4317"
+        {{- end }}
+
+        tls {
+          insecure = true
+        }
+
+        headers = {
+          "X-Scope-OrgID" = "{{ .Values.global.tenantId }}",
+        }
       }
     }
 
-    // --- Service Graph Metrics (sent to Mimir) ---
+    // ============================================================================
+    // SERVICE GRAPHS: Generate metrics from trace data
+    // ============================================================================
     otelcol.connector.servicegraph "default" {
       dimensions = [
         "http.method",
@@ -59,11 +94,18 @@ data:
         "cluster",
         "namespace",
         "service",
+        "status_code",
       ]
+
+      latency_histogram_buckets = [
+        "5ms", "10ms", "25ms", "50ms", "100ms", "250ms", "500ms", "1s", "2.5s", "5s", "10s",
+      ]
+
       store {
         ttl = "2s"
         max_items = 5000
       }
+
       output {
         metrics = [otelcol.exporter.prometheus.service_graphs.input]
       }
@@ -73,9 +115,14 @@ data:
       forward_to = [prometheus.remote_write.mimir.receiver]
     }
 
+    // ============================================================================
+    // Write service graph metrics to Mimir
+    // ============================================================================
     prometheus.remote_write "mimir" {
       endpoint {
-        url = "http://mimir-distributed-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
-        headers = { "X-Scope-OrgID" = "{{ .Values.global.tenantId }}" }
+        url = "http://{{ include "lgtm-stack.fullname" . }}-mimir-nginx.{{ .Release.Namespace }}.svc.cluster.local/api/v1/push"
+        headers = {
+          "X-Scope-OrgID" = "{{ .Values.global.tenantId }}",
+        }
       }
     }
